@@ -41,6 +41,8 @@ func main() {
 		protected.POST("/upload", handlers.UploadSongHandler)
 		protected.GET("/songs", handlers.ListSongsHandler)
 		protected.GET("/stream/:id", handlers.StreamSongHandler)
+		protected.DELETE("/song/:id", handlers.DeleteSongHandler)
+		protected.PUT("/song/:id", handlers.UpdateSongHandler)
 	}
 
 	// Start server
