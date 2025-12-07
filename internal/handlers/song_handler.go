@@ -1,18 +1,20 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"projectpi-backend/internal/models"
+	"projectpi-backend/internal/services"
 	"projectpi-backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
-func UploadSongHandler(c *gin.Context) {
+func UploadSongHandler(c *gin.Context, songService *services.SongService) {
 	title := c.PostForm("title")
 	artist := c.PostForm("artist")
 
@@ -66,24 +68,24 @@ func UploadSongHandler(c *gin.Context) {
 		return
 	}
 
+	songID := utils.GenerateSongID(uint(time.Now().UnixNano() % 10000))
 	song := models.Song{
+		SongID:   songID,
 		Title:    title,
 		Artist:   artist,
 		Filename: file.Filename,
 		UserID:   userIDStr,
 	}
-	if err := models.SaveSong(&song); err != nil {
+
+	if err := songService.CreateSong(&song); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save song"})
 		return
 	}
-	// Set SongID after DB ID is available
-	song.SongID = utils.GenerateSongID(song.ID)
-	models.DB.Save(&song)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Song uploaded successfully", "song_id": song.SongID})
 }
 
-func ListSongsHandler(c *gin.Context) {
+func ListSongsHandler(c *gin.Context, songService *services.SongService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -95,26 +97,16 @@ func ListSongsHandler(c *gin.Context) {
 		return
 	}
 
-	// Get pagination params
-	page := 1
-	limit := 10
-	if p := c.Query("page"); p != "" {
-		fmt.Sscanf(p, "%d", &page)
-	}
-	if l := c.Query("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
-	}
-	offset := (page - 1) * limit
-
-	var songs []models.Song
-	if err := models.DB.Where("user_id = ?", userIDStr).Offset(offset).Limit(limit).Find(&songs).Error; err != nil {
+	songs, err := songService.GetSongsByUserID(userIDStr)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch songs"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"songs": songs, "page": page, "limit": limit})
+
+	c.JSON(http.StatusOK, gin.H{"songs": songs})
 }
 
-func StreamSongHandler(c *gin.Context) {
+func StreamSongHandler(c *gin.Context, songService *services.SongService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -127,8 +119,8 @@ func StreamSongHandler(c *gin.Context) {
 	}
 
 	songID := c.Param("id")
-	var song models.Song
-	if err := models.DB.Where("song_id = ? AND user_id = ?", songID, userIDStr).First(&song).Error; err != nil {
+	song, err := songService.GetSongByID(songID)
+	if err != nil || song.UserID != userIDStr {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Song not found"})
 		return
 	}
@@ -138,7 +130,7 @@ func StreamSongHandler(c *gin.Context) {
 	c.File(filePath)
 }
 
-func DeleteSongHandler(c *gin.Context) {
+func DeleteSongHandler(c *gin.Context, songService *services.SongService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -151,8 +143,8 @@ func DeleteSongHandler(c *gin.Context) {
 	}
 
 	songID := c.Param("id")
-	var song models.Song
-	if err := models.DB.Where("song_id = ? AND user_id = ?", songID, userIDStr).First(&song).Error; err != nil {
+	song, err := songService.GetSongByID(songID)
+	if err != nil || song.UserID != userIDStr {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Song not found"})
 		return
 	}
@@ -163,7 +155,7 @@ func DeleteSongHandler(c *gin.Context) {
 	os.Remove(filePath)
 
 	// Delete from DB
-	if err := models.DB.Delete(&song).Error; err != nil {
+	if err := songService.DeleteSong(songID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete song"})
 		return
 	}
@@ -171,7 +163,7 @@ func DeleteSongHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Song deleted"})
 }
 
-func UpdateSongHandler(c *gin.Context) {
+func UpdateSongHandler(c *gin.Context, songService *services.SongService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -184,8 +176,8 @@ func UpdateSongHandler(c *gin.Context) {
 	}
 
 	songID := c.Param("id")
-	var song models.Song
-	if err := models.DB.Where("song_id = ? AND user_id = ?", songID, userIDStr).First(&song).Error; err != nil {
+	song, err := songService.GetSongByID(songID)
+	if err != nil || song.UserID != userIDStr {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Song not found"})
 		return
 	}
@@ -199,17 +191,20 @@ func UpdateSongHandler(c *gin.Context) {
 		return
 	}
 
-	song.Title = input.Title
-	song.Artist = input.Artist
-	if err := models.DB.Save(&song).Error; err != nil {
+	updates := bson.M{
+		"title":  input.Title,
+		"artist": input.Artist,
+	}
+
+	if err := songService.UpdateSong(songID, updates); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update song"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Song updated", "song": song})
+	c.JSON(http.StatusOK, gin.H{"message": "Song updated"})
 }
 
-func SearchSongsHandler(c *gin.Context) {
+func SearchSongsHandler(c *gin.Context, songService *services.SongService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
@@ -227,26 +222,11 @@ func SearchSongsHandler(c *gin.Context) {
 		return
 	}
 
-	// Get pagination params
-	page := 1
-	limit := 20
-	if p := c.Query("page"); p != "" {
-		fmt.Sscanf(p, "%d", &page)
-	}
-	if l := c.Query("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
-	}
-	offset := (page - 1) * limit
-
-	var songs []models.Song
-	searchPattern := "%" + query + "%"
-	if err := models.DB.Where("user_id = ? AND (title LIKE ? OR artist LIKE ?)", userIDStr, searchPattern, searchPattern).
-		Offset(offset).
-		Limit(limit).
-		Find(&songs).Error; err != nil {
+	songs, err := songService.SearchSongs(query, userIDStr)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search songs"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"songs": songs, "page": page, "limit": limit})
+	c.JSON(http.StatusOK, gin.H{"songs": songs})
 }

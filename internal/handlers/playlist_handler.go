@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"projectpi-backend/internal/models"
+	"projectpi-backend/internal/services"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // CreatePlaylistHandler creates a new playlist
-func CreatePlaylistHandler(c *gin.Context) {
+func CreatePlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	var request struct {
 		Name        string `json:"name" binding:"required"`
 		Description string `json:"description"`
@@ -39,7 +41,7 @@ func CreatePlaylistHandler(c *gin.Context) {
 		UserID:      userID.(string),
 	}
 
-	if err := models.DB.Create(&playlist).Error; err != nil {
+	if err := playlistService.CreatePlaylist(&playlist); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create playlist"})
 		return
 	}
@@ -48,65 +50,76 @@ func CreatePlaylistHandler(c *gin.Context) {
 }
 
 // ListPlaylistsHandler lists all playlists for the authenticated user
-func ListPlaylistsHandler(c *gin.Context) {
+func ListPlaylistsHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	var playlists []models.Playlist
-	if err := models.DB.Where("user_id = ?", userID).Find(&playlists).Error; err != nil {
+	playlists, err := playlistService.GetPlaylistsByUserID(userID.(string))
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch playlists"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"playlists": playlists})
+	c.JSON(http.StatusOK, playlists)
 }
 
-// GetPlaylistHandler gets a specific playlist with its songs
-func GetPlaylistHandler(c *gin.Context) {
+// GetPlaylistHandler retrieves a specific playlist with its songs
+func GetPlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	playlistID := c.Param("id")
+
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	var playlist models.Playlist
-	if err := models.DB.Where("playlist_id = ? AND user_id = ?", playlistID, userID).First(&playlist).Error; err != nil {
+	playlist, err := playlistService.GetPlaylistByID(playlistID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
 		return
 	}
 
+	// Check if playlist belongs to user
+	if playlist.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
 	// Get songs in playlist
-	var playlistSongs []models.PlaylistSong
-	if err := models.DB.Where("playlist_id = ?", playlistID).Order("position").Find(&playlistSongs).Error; err != nil {
+	playlistSongs, err := playlistService.GetPlaylistSongs(playlistID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch playlist songs"})
 		return
 	}
 
-	// Fetch song details
-	var songs []models.Song
-	for _, ps := range playlistSongs {
-		var song models.Song
-		if err := models.DB.Where("song_id = ?", ps.SongID).First(&song).Error; err == nil {
-			songs = append(songs, song)
-		}
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"playlist": playlist,
-		"songs":    songs,
+		"songs":    playlistSongs,
 	})
 }
 
-// UpdatePlaylistHandler updates playlist metadata
-func UpdatePlaylistHandler(c *gin.Context) {
+// UpdatePlaylistHandler updates a playlist's name or description
+func UpdatePlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	playlistID := c.Param("id")
+
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	playlist, err := playlistService.GetPlaylistByID(playlistID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
+		return
+	}
+
+	// Check ownership
+	if playlist.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
@@ -120,63 +133,77 @@ func UpdatePlaylistHandler(c *gin.Context) {
 		return
 	}
 
-	var playlist models.Playlist
-	if err := models.DB.Where("playlist_id = ? AND user_id = ?", playlistID, userID).First(&playlist).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
-		return
-	}
-
+	updates := bson.M{}
 	if request.Name != "" {
-		playlist.Name = request.Name
+		updates["name"] = request.Name
 	}
-	playlist.Description = request.Description
+	if request.Description != "" {
+		updates["description"] = request.Description
+	}
 
-	if err := models.DB.Save(&playlist).Error; err != nil {
+	if err := playlistService.UpdatePlaylist(playlistID, updates); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update playlist"})
 		return
 	}
 
-	c.JSON(http.StatusOK, playlist)
+	c.JSON(http.StatusOK, gin.H{"message": "Playlist updated"})
 }
 
-// DeletePlaylistHandler deletes a playlist
-func DeletePlaylistHandler(c *gin.Context) {
+// DeletePlaylistHandler deletes a playlist and all its songs
+func DeletePlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	playlistID := c.Param("id")
+
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	var playlist models.Playlist
-	if err := models.DB.Where("playlist_id = ? AND user_id = ?", playlistID, userID).First(&playlist).Error; err != nil {
+	playlist, err := playlistService.GetPlaylistByID(playlistID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
 		return
 	}
 
-	// Delete playlist songs first
-	models.DB.Where("playlist_id = ?", playlistID).Delete(&models.PlaylistSong{})
+	// Check ownership
+	if playlist.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
 
-	// Delete playlist
-	if err := models.DB.Delete(&playlist).Error; err != nil {
+	if err := playlistService.DeletePlaylist(playlistID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete playlist"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Playlist deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Playlist deleted"})
 }
 
 // AddSongToPlaylistHandler adds a song to a playlist
-func AddSongToPlaylistHandler(c *gin.Context) {
+func AddSongToPlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	playlistID := c.Param("id")
+
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
+	playlist, err := playlistService.GetPlaylistByID(playlistID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
+		return
+	}
+
+	// Check ownership
+	if playlist.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
 	var request struct {
-		SongID string `json:"song_id" binding:"required"`
+		SongID   string `json:"song_id" binding:"required"`
+		Position int    `json:"position"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -184,64 +211,44 @@ func AddSongToPlaylistHandler(c *gin.Context) {
 		return
 	}
 
-	// Verify playlist belongs to user
-	var playlist models.Playlist
-	if err := models.DB.Where("playlist_id = ? AND user_id = ?", playlistID, userID).First(&playlist).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
-		return
+	// Get current songs to determine position if not specified
+	if request.Position == 0 {
+		playlistSongs, _ := playlistService.GetPlaylistSongs(playlistID)
+		request.Position = len(playlistSongs) + 1
 	}
 
-	// Verify song exists and belongs to user
-	var song models.Song
-	if err := models.DB.Where("song_id = ? AND user_id = ?", request.SongID, userID).First(&song).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Song not found"})
-		return
-	}
-
-	// Check if song already in playlist
-	var existing models.PlaylistSong
-	if err := models.DB.Where("playlist_id = ? AND song_id = ?", playlistID, request.SongID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Song already in playlist"})
-		return
-	}
-
-	// Get max position
-	var maxPosition int
-	models.DB.Model(&models.PlaylistSong{}).Where("playlist_id = ?", playlistID).Select("COALESCE(MAX(position), 0)").Scan(&maxPosition)
-
-	playlistSong := models.PlaylistSong{
-		PlaylistID: playlistID,
-		SongID:     request.SongID,
-		Position:   maxPosition + 1,
-	}
-
-	if err := models.DB.Create(&playlistSong).Error; err != nil {
+	if err := playlistService.AddSongToPlaylist(playlistID, request.SongID, request.Position); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add song to playlist"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "Song added to playlist"})
+	c.JSON(http.StatusOK, gin.H{"message": "Song added to playlist"})
 }
 
 // RemoveSongFromPlaylistHandler removes a song from a playlist
-func RemoveSongFromPlaylistHandler(c *gin.Context) {
+func RemoveSongFromPlaylistHandler(c *gin.Context, playlistService *services.PlaylistService) {
 	playlistID := c.Param("id")
 	songID := c.Param("songId")
+
 	userID, exists := c.Get("UserID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	// Verify playlist belongs to user
-	var playlist models.Playlist
-	if err := models.DB.Where("playlist_id = ? AND user_id = ?", playlistID, userID).First(&playlist).Error; err != nil {
+	playlist, err := playlistService.GetPlaylistByID(playlistID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Playlist not found"})
 		return
 	}
 
-	// Delete playlist song
-	if err := models.DB.Where("playlist_id = ? AND song_id = ?", playlistID, songID).Delete(&models.PlaylistSong{}).Error; err != nil {
+	// Check ownership
+	if playlist.UserID != userID.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	if err := playlistService.RemoveSongFromPlaylist(playlistID, songID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove song from playlist"})
 		return
 	}

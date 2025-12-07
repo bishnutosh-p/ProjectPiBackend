@@ -1,11 +1,17 @@
 package models
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
 
 type User struct {
-	gorm.Model
-	UserID   string `gorm:"unique;not null"` // e.g., USER-123-...
-	Username string `gorm:"unique;not null"`
-	Email    string `gorm:"unique;not null"`
-	Password string `gorm:"not null"`
+	ID        primitive.ObjectID `bson:"_id,omitempty"`
+	UserID    string             `bson:"user_id"`
+	Username  string             `bson:"username"`
+	Email     string             `bson:"email"`
+	Password  string             `bson:"password"`
+	CreatedAt time.Time          `bson:"created_at"`
+	UpdatedAt time.Time          `bson:"updated_at"`
 }

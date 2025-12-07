@@ -1,22 +1,36 @@
 package services
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"projectpi-backend/internal/models"
 	"projectpi-backend/internal/utils"
 
-	"gorm.io/gorm"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type UserService struct {
-	DB *gorm.DB
+	DB *mongo.Database
 }
 
 func (s *UserService) CreateUser(username, email, password string) error {
+	collection := s.DB.Collection("users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Check if user already exists
-	var count int64
-	s.DB.Model(&models.User{}).Where("email = ? OR username = ?", email, username).Count(&count)
+	count, err := collection.CountDocuments(ctx, bson.M{
+		"$or": []bson.M{
+			{"email": email},
+			{"username": username},
+		},
+	})
+	if err != nil {
+		return err
+	}
 	if count > 0 {
 		return errors.New("user already exists")
 	}
@@ -27,29 +41,38 @@ func (s *UserService) CreateUser(username, email, password string) error {
 		return err
 	}
 
-	// Create user
+	// Create user with auto-generated ID
+	userID := utils.GenerateUserID(uint(time.Now().UnixNano() % 10000))
 	user := models.User{
-		Username: username,
-		Email:    email,
-		Password: hashedPassword,
-	}
-	err = s.DB.Create(&user).Error
-	if err != nil {
-		return err
+		UserID:    userID,
+		Username:  username,
+		Email:     email,
+		Password:  hashedPassword,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
-	// After user is created and has a DB ID:
-	user.UserID = utils.GenerateUserID(user.ID)
-	return s.DB.Save(&user).Error
+	_, err = collection.InsertOne(ctx, user)
+	return err
 }
 
 func (s *UserService) AuthenticateUser(email, password string) (*models.User, error) {
+	collection := s.DB.Collection("users")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	var user models.User
-	if err := s.DB.Where("email = ?", email).First(&user).Error; err != nil {
-		return nil, errors.New("invalid email or password")
+	err := collection.FindOne(ctx, bson.M{"email": email}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("invalid email or password")
+		}
+		return nil, err
 	}
+
 	if !utils.CheckPasswordHash(password, user.Password) {
 		return nil, errors.New("invalid email or password")
 	}
+
 	return &user, nil
 }
