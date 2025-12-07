@@ -11,11 +11,20 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// MongoDB URI
-	mongoURI := "mongodb+srv://bishnutoshpanda8249_db_user:W89QOC2cJmGV8Jg1@cluster0.gfzxghz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+	// Load environment variables from .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using environment variables from system")
+	}
+
+	// Get MongoDB URI from environment variable
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		log.Fatal("MONGO_URI environment variable is not set")
+	}
 
 	// Initialize MongoDB
 	client, err := utils.InitMongoDB(mongoURI)
@@ -109,5 +118,3 @@ func main() {
 	}
 	r.Run(":" + port)
 }
-
-
