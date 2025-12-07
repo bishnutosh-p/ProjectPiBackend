@@ -208,3 +208,45 @@ func UpdateSongHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Song updated", "song": song})
 }
+
+func SearchSongsHandler(c *gin.Context) {
+	userID, exists := c.Get("UserID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+	userIDStr, ok := userID.(string)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Search query is required"})
+		return
+	}
+
+	// Get pagination params
+	page := 1
+	limit := 20
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	offset := (page - 1) * limit
+
+	var songs []models.Song
+	searchPattern := "%" + query + "%"
+	if err := models.DB.Where("user_id = ? AND (title LIKE ? OR artist LIKE ?)", userIDStr, searchPattern, searchPattern).
+		Offset(offset).
+		Limit(limit).
+		Find(&songs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search songs"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"songs": songs, "page": page, "limit": limit})
+}
