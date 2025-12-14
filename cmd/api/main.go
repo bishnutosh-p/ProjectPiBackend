@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+	gin.SetMode(gin.ReleaseMode)
 	// Load environment variables from .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables from system")
@@ -51,15 +52,26 @@ func main() {
 	// Setup Gin
 	r := gin.Default()
 
+	// Set trusted proxies - important for deployment behind proxies/load balancers
+	r.SetTrustedProxies(nil) // trust all proxies
+
+	// Set max multipart memory for file uploads (default is 32 MiB, increase for larger audio files)
+	r.MaxMultipartMemory = 64 << 20 // 64 MiB (adjust based on your needs)
+	// For larger files: r.MaxMultipartMemory = 128 << 20 // 128 MiB
+
 	// Configure CORS
 	config := cors.DefaultConfig()
 	config.AllowOrigins = []string{"https://project-pi-frontend.vercel.app"} // Your frontend URL
+	config.AllowOrigins = []string{"https://spotipi.vercel.app"}             // Your frontend URL
 	config.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
 	config.AllowCredentials = true
 	r.Use(cors.New(config))
 
 	// Routes
+	r.GET("/health", func(c *gin.Context) {
+		c.String(200, "Healthy, Running!")
+	})
 	r.POST("/signup", authHandler.Signup)
 	r.POST("/signin", authHandler.Signin)
 
